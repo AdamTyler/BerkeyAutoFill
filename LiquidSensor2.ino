@@ -3,6 +3,7 @@
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include "Adafruit_LEDBackpack.h"
+#include "tetris.h"
 
 Adafruit_24bargraph bar = Adafruit_24bargraph();
 Adafruit_VL53L0X lox = Adafruit_VL53L0X();
@@ -10,20 +11,26 @@ Adafruit_VL53L0X lox = Adafruit_VL53L0X();
 // initialize the library with the numbers of the interface pins
 LiquidCrystal lcd(7, 8, 6, 5, 4, 3);
 
+// circuit vars
+int speakerPin = 9;
 int solenoidPin = 12;
 int buttonPin = 10;
 int buttonState = 0;
+
+// operation vars
 int autoFill = false;
 int btnOn = false;
+int doNotFillUntilReset = false;
 int filledInRow = 0;
 int counter = 0;
+uint16_t waterDistanceMm;
+
+// LCD vars
 int dayCounter = 0;
 float filledToday = 0.0;
 float filledYear = 0.0;
 static char outDay[4];
 static char outYear[5];
-uint16_t waterDistanceMm;
-
 
 // Configuration values:
 #define TANK_HEIGHT_MM      285
@@ -31,6 +38,7 @@ uint16_t waterDistanceMm;
 #define MINUTE              60000
 #define MINS_BETWEEN_FILLS  30
 #define SECS_TO_FILL        10
+#define MINS_BETWEEN_SPEAKER 10
 
 
 void setup(void) {
@@ -75,12 +83,10 @@ void loop(void) {
   // fill if button pressed
   checkButton();
 
+  // if manual fill button is on, exit loop until its turned back off
   if (btnOn == true) {
-    Serial.println("btnOn true, return " );
     return;
   }
-  Serial.print("btnOn false, continue ");
-  Serial.println(counter);
 
   // get distance from range sensor
   getRange();
@@ -89,6 +95,15 @@ void loop(void) {
   printFullness();
 
   counter++;
+
+  // TEST: if set we are not longer going to operate until user intervention reset
+  // Play every MINS_BETWEEN_SPEAKER minutes
+  if (doNotFillUntilReset && ((counter / 60) >= MINS_BETWEEN_SPEAKER)) {
+    playSong();
+//    playBeep();
+    counter = 0;
+    return;
+  }
 
   // if MINS_BETWEEN_FILLS mins of checking have passed, fill and reset counter
   if ((counter / 60) >= MINS_BETWEEN_FILLS) {
@@ -105,17 +120,16 @@ void loop(void) {
   }
 
   delay(SECOND);
-
 }
 
 void checkButton() {
   buttonState = digitalRead(buttonPin);
   if (!btnOn && buttonState == HIGH) {
-    Serial.println("btn flipped, turn pump on" );
+    // manual fill button is on, turn pump on
     btnOn = true;
     pumpOn();
   } else if (btnOn && buttonState != HIGH) {
-    Serial.println("btn flipped, turn pump off" );
+    // manual fill button is off, turn pump off
     btnOn = false;
     pumpOff();
     filledToday += 0.15625;
@@ -123,17 +137,10 @@ void checkButton() {
     updateFillTotals();
     counter = 0;
   }
-  //  if (autoFill == true) {
-  //    autoFill = false;
-  //    fill(10);
-  //  }
 }
 
 void printWait(int count) {
   int minsLeft = MINS_BETWEEN_FILLS - count;
-  //  lcd.setCursor(9, 0);
-  //  lcd.print("wait");
-  //  Serial.println("wait");
   lcd.setCursor(13, 1);
   lcd.print(char(0x00 + 171));
   if (minsLeft < 10) {
@@ -146,9 +153,6 @@ void printWait(int count) {
 
 void printFill(int count) {
   int secs = count / SECOND;
-  //  lcd.setCursor(9, 0);
-  //  lcd.print("wait");
-  //  Serial.println("wait");
   lcd.setCursor(13, 1);
   lcd.print(char(0x00 + 171));
   if (secs < 10) {
@@ -160,9 +164,6 @@ void printFill(int count) {
 
 void printFullness() {
   int p = (1 - ((float)waterDistanceMm / (float)TANK_HEIGHT_MM)) * 100;
-  //  String percentFull = String(p) + "% FULL  ";
-  //  lcd.setCursor(0, 0);
-  //  lcd.print(percentFull);
   setBar(p);
 }
 
@@ -204,22 +205,14 @@ void getRange() {
 
   if (measure.RangeStatus != 4) {  // phase failures have incorrect data
     waterDistanceMm = measure.RangeMilliMeter;
-    // lcd.setCursor(0, 1);
     String distString = "Dist (mm): " + String(waterDistanceMm) + "   ";
-    Serial.println(distString);
-    // lcd.print(distString);
+    lcd.setCursor(0, 1);
+    lcd.print(distString);
   } else {
-    // lcd.setCursor(0, 1);
-    // lcd.print(" out of range   ");
-    Serial.println(" out of range   ");
-
+    // out of range... we should never get here
+    // if we do lets set the stop for now
+    doNotFillUntilReset = true;
   }
-}
-
-void fill(int fillTime) {
-  pumpOn();
-  countdownSec(fillTime);
-  pumpOff();
 }
 
 void updateFillTotals() {
@@ -236,28 +229,33 @@ void pumpOn() {
 }
 
 void pumpOff() {
-  digitalWrite(solenoidPin, LOW);    //Switch Solenoid ON
+  digitalWrite(solenoidPin, LOW);    //Switch Solenoid OFF
 }
 
 void fillIfNeeded() {
   int currentFill = (1 - ((float)waterDistanceMm / (float)TANK_HEIGHT_MM)) * 100;
 
+  if (currentFill > 75) {
+    // TEST: To avoid overflow, once we are above 75% full, set speaker to beep and no longer fill
+    // This will require user intervention and a reset of the program to continue
+    doNotFillUntilReset = true;
+    return;
+  }
+
   if (currentFill < 50) {
     // fill for SECS_TO_FILL
-    if (filledInRow < 3) {
-      // lcd.setCursor(9, 0);
-      // lcd.print("fill");
+    if (filledInRow < 2) {
       pumpOn();
       countdownSec(SECS_TO_FILL);
       filledInRow++;
+      // update fill amounts: 20oz per fill (0.15625 of a gallon)
+      filledToday += 0.15625;
+      filledYear += 0.15625;
+      updateFillTotals();
     } else {
       filledInRow = 0;
     }
   }
   pumpOff();
-  // update fill amounts
-  // 20oz per fill (0.15625 of a gallon)
-  filledToday += 0.15625;
-  filledYear += 0.15625;
-  updateFillTotals();
+
 }
