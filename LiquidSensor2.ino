@@ -24,6 +24,8 @@ int doNotFillUntilReset = false;
 int filledInRow = 0;
 int counter = 0;
 uint16_t waterDistanceMm;
+uint16_t lastMs[6] = {285, 285, 285, 285, 285, 285};
+int measurePointer = 0;
 
 // LCD vars
 int dayCounter = 0;
@@ -38,7 +40,7 @@ static char outYear[5];
 #define MINUTE              60000
 #define MINS_BETWEEN_FILLS  30
 #define SECS_TO_FILL        10
-#define MINS_BETWEEN_SPEAKER 10
+#define MINS_BETWEEN_SPEAKER 30
 
 
 void setup(void) {
@@ -55,8 +57,6 @@ void setup(void) {
   lcd.setCursor(0, 1);
   dtostrf(filledYear, 3, 1, outYear);
   lcd.print("Year " + String(outYear));
-  Serial.begin(9600);
-  Serial.println("Begin");
 
   waterDistanceMm = TANK_HEIGHT_MM;
   counter = 0;
@@ -100,7 +100,6 @@ void loop(void) {
   // Play every MINS_BETWEEN_SPEAKER minutes
   if (doNotFillUntilReset && ((counter / 60) >= MINS_BETWEEN_SPEAKER)) {
     playSong();
-//    playBeep();
     counter = 0;
     return;
   }
@@ -204,14 +203,20 @@ void getRange() {
   lox.rangingTest(&measure, false); // pass in 'true' to get debug data printout!
 
   if (measure.RangeStatus != 4) {  // phase failures have incorrect data
-    waterDistanceMm = measure.RangeMilliMeter;
-    String distString = "Dist (mm): " + String(waterDistanceMm) + "   ";
+    // use average of last 3 readings
+    lastMs[measurePointer] = measure.RangeMilliMeter;
+    measurePointer = (measurePointer + 1) % 6;
+    waterDistanceMm = (lastMs[0] + lastMs[1] + lastMs[2] + lastMs[3] + lastMs[4] + lastMs[5]) / 6;
+
+    int p = (1 - ((float)waterDistanceMm / (float)TANK_HEIGHT_MM)) * 100;
+    String distString = String(waterDistanceMm) + "mm " + String(p) + "%";
     lcd.setCursor(0, 1);
     lcd.print(distString);
   } else {
     // out of range... we should never get here
     // if we do lets set the stop for now
-    doNotFillUntilReset = true;
+    // TEST: This may have been triggering
+    // doNotFillUntilReset = true;
   }
 }
 
@@ -236,6 +241,7 @@ void fillIfNeeded() {
   int currentFill = (1 - ((float)waterDistanceMm / (float)TANK_HEIGHT_MM)) * 100;
 
   if (currentFill > 75) {
+    playBeep();
     // TEST: To avoid overflow, once we are above 75% full, set speaker to beep and no longer fill
     // This will require user intervention and a reset of the program to continue
     doNotFillUntilReset = true;
